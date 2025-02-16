@@ -18,8 +18,8 @@ jobs:
         curl -fsSL https://railway.app/install.sh | sh
         echo "$HOME/.railway/bin" >> $GITHUB_PATH
 
-    - name: Log in to Railway
-      run: railway login --token ${{ secrets.RAILWAY_TOKEN }}
+    - name: Set Railway Token
+      run: echo "RAILWAY_TOKEN=${{ secrets.RAILWAY_TOKEN }}" >> $GITHUB_ENV
 
     - name: Deploy to Railway
       run: railway up --service kata-konsumen
