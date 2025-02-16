@@ -13,25 +13,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+    - name: Set up Railway CLI
+      run: |
+        curl -fsSL https://railway.app/install.sh | sh
+        echo "$HOME/.railway/bin" >> $GITHUB_PATH
 
     - name: Log in to Railway
-      uses: docker/login-action@v2
-      with:
-        registry: registry.railway.app
-        username: ${{ secrets.RAILWAY_TOKEN }}
-        password: ${{ secrets.RAILWAY_TOKEN }}
-
-    - name: Build and Push Docker image
-      uses: docker/build-push-action@v3
-      with:
-        context: .
-        push: true
-        tags: registry.railway.app/katakonsumen:latest
+      run: railway login --token ${{ secrets.RAILWAY_TOKEN }}
 
     - name: Deploy to Railway
-      uses: railwayapp/cli-action@v1
-      with:
-        service: kata-konsumen
-        token: ${{ secrets.RAILWAY_TOKEN }}
+      run: railway up --service kata-konsumen
