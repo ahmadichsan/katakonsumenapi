@@ -1,10 +1,13 @@
+import pandas as pd
+import numpy as np
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import File, UploadFile, APIRouter, HTTPException, Request
 from app.models.review_model import ReviewModel
 from app.services.database import reviews_collection
 from datetime import datetime, timezone
 from app.services.supabase_service import delete_from_supabase, is_image_url, download_image, upload_to_supabase
 from app.utils.utils import array_like_search, parse_comma_separated, sql_like_search, trim_value
+import io
 
 router = APIRouter()
 
@@ -225,4 +228,134 @@ async def delete_all_reviews_by_username(request: Request):
         "status": "success",
         "deleted_reviews": result.deleted_count,
         "message": "All reviews deleted successfully"
+    }
+
+@router.post("/api/reviews/upload-excel", response_description="Upload reviews from Excel")
+async def upload_reviews_from_excel(file: UploadFile = File(...)):
+    if not file.filename.endswith(('.xls', '.xlsx')):
+        raise HTTPException(status_code=400, detail="Only Excel files are accepted")
+
+    try:
+        # ✅ Load Excel ke DataFrame
+        contents = await file.read()
+        excel_data = pd.read_excel(io.BytesIO(contents))
+
+        # ✅ Konversi semua NaN ke None (Agar JSON valid)
+        excel_data = excel_data.replace({np.nan: None})
+
+        # ✅ Ubah kolom jadi snake_case
+        excel_data.columns = [col.strip().lower().replace(" ", "_") for col in excel_data.columns]
+
+        inserted_count = 0
+        error_logs = []
+
+        for idx, row in excel_data.iterrows():
+            row_number = idx + 2  # Karena header di baris 1
+
+            # ✅ Konversi row ke dict
+            row_dict = row.to_dict()
+
+            # ✅ Trim semua string
+            row_dict = {key: trim_value(value) for key, value in row_dict.items()}
+
+            # ✅ Konversi tags (comma-separated string) menjadi array
+            if "tags" in row_dict:
+                if isinstance(row_dict["tags"], str):
+                    row_dict["tags"] = [tag.strip() for tag in parse_comma_separated(row_dict["tags"])]
+                elif row_dict["tags"] is None:
+                    row_dict["tags"] = []
+                else:
+                    row_dict["tags"] = trim_value(row_dict["tags"])
+            else:
+                row_dict["tags"] = []
+            
+            # ✅ Konversi image_urls (comma-separated string) menjadi array
+            if "image_urls" in row_dict:
+                if isinstance(row_dict["image_urls"], str):
+                    row_dict["image_urls"] = [url.strip() for url in parse_comma_separated(row_dict["image_urls"])]
+                elif row_dict["image_urls"] is None:
+                    row_dict["image_urls"] = []
+                else:
+                    row_dict["image_urls"] = trim_value(row_dict["image_urls"])
+            else:
+                row_dict["image_urls"] = []
+
+            # ✅ Tambahkan created_at otomatis
+            row_dict["created_at"] = datetime.now(timezone.utc)
+
+            try:
+                # ✅ Validasi dengan Pydantic Model
+                review = ReviewModel(**row_dict)
+                review_data = review.model_dump()
+                
+                # ✅ Proses Upload Gambar ke Supabase
+                uploaded_image_urls = []
+
+                for image_url in review_data.get("image_urls", []):
+                    if not is_image_url(image_url):
+                        print(f"Skipped non-image URL: {image_url}")
+                        continue
+
+                    image_bytes = download_image(image_url)
+                    if not image_bytes:
+                        print(f"Skipping {image_url} due to download failure.")
+                        continue
+
+                    blob_url = upload_to_supabase(review_data["username"], image_bytes)
+                    if blob_url:
+                        uploaded_image_urls.append(blob_url)
+                    else:
+                        print(f"Skipping {image_url} due to upload failure.")
+
+                # ✅ Update image_urls dengan URL dari Supabase
+                review_data["image_urls"] = uploaded_image_urls
+
+                # ✅ Insert ke MongoDB
+                reviews_collection.insert_one(review_data)
+                inserted_count += 1
+
+            except Exception as e:
+                # ✅ Catat error dengan nomor baris & detail
+                error_logs.append({
+                    "row_number": row_number,
+                    "error_message": str(e),
+                    "row_data": {k: v if v is not None else "" for k, v in row_dict.items()}
+                })
+
+        # ✅ Return hasil: Inserted + Error Logs
+        return {
+            "status": "success",
+            "inserted_count": inserted_count,
+            "error_count": len(error_logs),
+            "errors": error_logs
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process the Excel file: {e}")
+
+@router.post("/api/reviews/delete-all-by-source", response_description="Delete all reviews by source")
+async def delete_all_reviews_by_source(request: Request):
+    """
+    Hapus semua review berdasarkan source ('pusaka_chat' atau 'internal_system') dan hapus gambar di Supabase.
+    """
+    body = await request.json()
+    source = body.get("source")
+
+    # Validasi Source
+    if source not in ["pusaka_chat", "internal_system"]:
+        raise HTTPException(status_code=400, detail="Source must be 'pusaka_chat' or 'internal_system'")
+
+    # Ambil semua review sesuai source
+    reviews = list(reviews_collection.find({"source": source}))
+
+    if not reviews:
+        return {"status": "success", "message": f"No reviews found for source '{source}'"}
+
+    # Hapus semua review dari MongoDB
+    result = reviews_collection.delete_many({"source": source})
+
+    return {
+        "status": "success",
+        "deleted_reviews": result.deleted_count,
+        "message": f"All reviews from source '{source}' have been deleted"
     }
