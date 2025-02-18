@@ -53,3 +53,18 @@ def upload_to_supabase(username: str, image_bytes: bytes) -> str:
     except Exception as e:
         print(f"Failed to upload image to Supabase: {e}")
         return None
+
+def delete_from_supabase(image_url: str):
+    """
+    Delete image from Supabase Storage using image URL.
+    """
+    try:
+        path = image_url.split(f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/")[-1]
+        response = supabase.storage.from_(SUPABASE_BUCKET).remove([path])
+
+        if response and response[0].get("error"):
+            print(f"Failed to delete image from Supabase: {response[0]['error']}")
+        else:
+            print(f"Deleted image from Supabase: {image_url}")
+    except Exception as e:
+        print(f"Error deleting image from Supabase: {e}")

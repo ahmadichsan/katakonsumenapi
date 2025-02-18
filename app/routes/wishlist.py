@@ -58,3 +58,39 @@ async def get_wishlist(request: Request):
         "wishlists": wishlists
     }
 
+@router.post("/api/wishlist/delete-by-username-and-title", response_description="Delete wishlist by username and title")
+async def delete_wishlist_by_username_and_title(request: Request):
+    body = await request.json()
+    username = body.get("username")
+    title = body.get("wishlist_title")
+
+    if not username or not title:
+        raise HTTPException(status_code=400, detail="Username and Wishlist Title are required")
+
+    query = {
+        "username": username,
+        "wishlist_title": {"$regex": f"^{title}$", "$options": "i"}  # Exact match, case-insensitive
+    }
+
+    result = wishlist_collection.delete_one(query)
+
+    if result.deleted_count == 1:
+        return {"status": "success", "message": "Wishlist deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="Wishlist not found")
+
+@router.post("/api/wishlist/delete-all-by-username", response_description="Delete all wishlists by username")
+async def delete_all_wishlist_by_username(request: Request):
+    body = await request.json()
+    username = body.get("username")
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+
+    result = wishlist_collection.delete_many({"username": username})
+
+    return {
+        "status": "success",
+        "deleted_wishlists": result.deleted_count,
+        "message": "All wishlists deleted successfully"
+    }

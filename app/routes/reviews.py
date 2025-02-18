@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.models.review_model import ReviewModel
 from app.services.database import reviews_collection
 from datetime import datetime, timezone
-from app.services.supabase_service import is_image_url, download_image, upload_to_supabase
+from app.services.supabase_service import delete_from_supabase, is_image_url, download_image, upload_to_supabase
 from app.utils.utils import array_like_search, parse_comma_separated, sql_like_search, trim_value
 
 router = APIRouter()
@@ -157,3 +157,72 @@ async def get_review_detail(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving review: {e}")
 
+@router.post("/api/reviews/get-by-username", response_description="Get all reviews by username")
+async def get_reviews_by_username(request: Request):
+    body = await request.json()
+    username = body.get("username")
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+
+    query = {"username": username}
+    reviews = list(reviews_collection.find(query))
+    
+    for review in reviews:
+        review["_id"] = str(review["_id"])
+    
+    return {
+        "status": "success",
+        "total_reviews": len(reviews),
+        "reviews": reviews
+    }
+
+@router.post("/api/reviews/delete-by-id", response_description="Delete review by review ID")
+async def delete_review_by_id(request: Request):
+    body = await request.json()
+    review_id = body.get("review_id")
+
+    if not review_id:
+        raise HTTPException(status_code=400, detail="Review ID is required")
+
+    # Cari review dulu
+    review = reviews_collection.find_one({"_id": ObjectId(review_id)})
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    # Hapus gambar dari Supabase
+    for image_url in review.get("image_urls", []):
+        delete_from_supabase(image_url)
+
+    # Hapus review dari MongoDB
+    result = reviews_collection.delete_one({"_id": ObjectId(review_id)})
+    
+    if result.deleted_count == 1:
+        return {"status": "success", "message": "Review deleted successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to delete review")
+
+@router.post("/api/reviews/delete-all-by-username", response_description="Delete all reviews by username")
+async def delete_all_reviews_by_username(request: Request):
+    body = await request.json()
+    username = body.get("username")
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+
+    # Cari semua review
+    reviews = list(reviews_collection.find({"username": username}))
+    
+    # Hapus semua gambar di Supabase
+    for review in reviews:
+        for image_url in review.get("image_urls", []):
+            delete_from_supabase(image_url)
+
+    # Hapus semua review dari MongoDB
+    result = reviews_collection.delete_many({"username": username})
+
+    return {
+        "status": "success",
+        "deleted_reviews": result.deleted_count,
+        "message": "All reviews deleted successfully"
+    }
