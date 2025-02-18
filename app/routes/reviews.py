@@ -126,7 +126,7 @@ async def search_reviews(request: Request):
     total_data = reviews_collection.count_documents(query)
 
     # Query Execution (with limit)
-    limit = body.get("limit", 20)
+    limit = body.get("limit", 30)
     results = list(reviews_collection.find(query).limit(limit))
     returned_data = len(results)
 

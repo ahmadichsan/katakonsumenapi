@@ -44,7 +44,7 @@ async def get_wishlist(request: Request):
     total_data = wishlist_collection.count_documents(query)
 
     # Query Execution (with limit)
-    limit = body.get("limit", 10)
+    limit = body.get("limit", 30)
     wishlists = list(wishlist_collection.find(query).limit(limit))
     returned_data = len(wishlists)
 
