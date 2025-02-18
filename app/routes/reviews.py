@@ -1,29 +1,40 @@
 from bson import ObjectId
-from typing import List
 from fastapi import APIRouter, HTTPException, Request
 from app.models.review_model import ReviewModel
 from app.services.database import reviews_collection
 from datetime import datetime, timezone
-import re
 from app.services.supabase_service import is_image_url, download_image, upload_to_supabase
+from app.utils.utils import array_like_search, parse_comma_separated, sql_like_search, trim_value
 
 router = APIRouter()
-
-def parse_comma_separated(value: str) -> List[str]:
-    """Convert comma-separated string to list of strings."""
-    return value.split(",") if value else []
 
 @router.post("/api/reviews", response_description="Create a new review")
 async def create_review(request: Request):
     # Ambil payload mentah
     raw_body = await request.json()
 
-    # Konversi 'tags' & 'image_urls' dari string ke list jika perlu
-    if "tags" in raw_body and isinstance(raw_body["tags"], str):
-        raw_body["tags"] = parse_comma_separated(raw_body["tags"])
+    # CHANGED: Konversi 'tags' & 'image_urls' dari string ke list jika perlu, dengan trim
+    if "tags" in raw_body:
+        if isinstance(raw_body["tags"], str):
+            raw_body["tags"] = [tag.strip() for tag in parse_comma_separated(raw_body["tags"])]
+        else:
+            raw_body["tags"] = trim_value(raw_body["tags"])
 
-    if "image_urls" in raw_body and isinstance(raw_body["image_urls"], str):
-        raw_body["image_urls"] = parse_comma_separated(raw_body["image_urls"])
+    if "image_urls" in raw_body:
+        if isinstance(raw_body["image_urls"], str):
+            raw_body["image_urls"] = [url.strip() for url in parse_comma_separated(raw_body["image_urls"])]
+        else:
+            raw_body["image_urls"] = trim_value(raw_body["image_urls"])
+
+    string_fields = [
+        "username", "created_by", "review_title", "category",
+        "specifications", "purchase_type", "store_name",
+        "purchase_link", "review_content"
+    ]
+
+    for field in string_fields:
+        if field in raw_body and isinstance(raw_body[field], str):
+            raw_body[field] = raw_body[field].strip()
 
     # Validasi dengan Pydantic setelah konversi
     review = ReviewModel(**raw_body)
@@ -32,10 +43,15 @@ async def create_review(request: Request):
     uploaded_image_urls = []
 
     for image_url in review_data.get("image_urls", []):
+        # Cek apakah URL adalah image/*
+        if not is_image_url(image_url):
+            print(f"Skipped non-image URL: {image_url}")
+            continue
+
         image_bytes = download_image(image_url)
         if not image_bytes:
             print(f"Skipping {image_url} due to download failure or invalid content.")
-            continue  # Skip if not downloadable or not image/*
+            continue
 
         blob_url = upload_to_supabase(review_data["username"], image_bytes)
         if blob_url:
@@ -56,18 +72,12 @@ async def create_review(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error saving review: {e}")
 
-def sql_like_search(value: str) -> dict:
-    """SQL-like substring search (case-insensitive)."""
-    escaped_value = re.escape(value)  # Escape regex special chars
-    pattern = f"(?=.*{escaped_value})"  # Positive lookahead pattern
-    return {"$regex": pattern, "$options": "i"}
-
-@router.post("/api/reviews/search", response_description="Search reviews")
+@router.post("/api/reviews/search", response_description="Search reviews with total data")
 async def search_reviews(request: Request):
-    body = await request.json()  # Ambil filter dari body payload
+    body = await request.json()
     query = {}
 
-    # String Fields: SQL-like Search
+    # String Fields: Case-insensitive partial matching
     string_fields = [
         "username", "created_by", "review_title", "category",
         "specifications", "purchase_type", "store_name",
@@ -77,6 +87,12 @@ async def search_reviews(request: Request):
     for field in string_fields:
         if field in body and body[field]:
             query[field] = sql_like_search(body[field])
+
+    # Array Matching (Tags)
+    if "tags" in body and body["tags"]:
+        tags = [tag.strip() for tag in body["tags"].split(",")]
+        query.update(array_like_search(tags))
+
 
     # Range Filters
     if "price_min" in body or "price_max" in body:
@@ -94,7 +110,6 @@ async def search_reviews(request: Request):
             query["rating"]["$lte"] = body["rating_max"]
 
     # Date Range Filters
-    from datetime import datetime
     if "purchase_date_start" in body and "purchase_date_end" in body:
         query["purchase_date"] = {
             "$gte": datetime.fromisoformat(body["purchase_date_start"]),
@@ -107,20 +122,23 @@ async def search_reviews(request: Request):
             "$lte": datetime.fromisoformat(body["created_at_end"])
         }
 
-    # Array Matching
-    if "tags" in body and body["tags"]:
-        query["tags"] = {"$in": body["tags"].split(",")}
-    if "image_urls" in body and body["image_urls"]:
-        query["image_urls"] = {"$in": body["image_urls"].split(",")}
+    # Total data matching (tanpa limit)
+    total_data = reviews_collection.count_documents(query)
 
-    # Query Execution
-    limit = body.get("limit", 10)
+    # Query Execution (with limit)
+    limit = body.get("limit", 20)
     results = list(reviews_collection.find(query).limit(limit))
+    returned_data = len(results)
 
     for review in results:
-        review["_id"] = str(review["_id"])  # Convert ObjectId to string
+        review["_id"] = str(review["_id"])
 
-    return {"status": "success", "reviews": results}
+    return {
+        "status": "success",
+        "total_data": total_data,
+        "returned_data": returned_data,
+        "reviews": results
+    }
 
 @router.post("/api/reviews/detail", response_description="Get review detail by review_id")
 async def get_review_detail(request: Request):
